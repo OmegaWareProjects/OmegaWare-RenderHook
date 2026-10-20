@@ -1,0 +1,196 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "xmake: Build Windows x64 (Debug)",
+            "type": "shell",
+            "command": "xmake",
+            "args": [
+                "config",
+                "-p",
+                "windows",
+                "-a",
+                "x64",
+                "-m",
+                "debug",
+                "-y",
+                "&&",
+                "xmake",
+                "build"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "problemMatcher": [
+                "$msCompile"
+            ],
+            "detail": "Build OmegaRenderHook, the tools and the self-test for Windows x64 in debug mode"
+        },
+        {
+            "label": "Self-test Windows x64 (Debug)",
+            "type": "shell",
+            "command": "${workspaceFolder}/Build/Debug/x64/OmegaRenderHook-SelfTest.exe",
+            "args": [],
+            "dependsOn": "xmake: Build Windows x64 (Debug)",
+            "problemMatcher": [],
+            "group": "test",
+            "detail": "Build then run the pipeline self-test (x64, debug)"
+        },
+        {
+            "label": "Inject test overlay Windows x64 (Debug)",
+            "type": "shell",
+            "command": "${workspaceFolder}/Build/Debug/x64/OmegaRenderHook-Injector.exe",
+            "args": [
+                "${input:process}",
+                "${workspaceFolder}/Build/Debug/x64/OmegaRenderHook-TestOverlay.dll"
+            ],
+            "dependsOn": "xmake: Build Windows x64 (Debug)",
+            "problemMatcher": [],
+            "detail": "Build then inject the test overlay into a running process (x64, debug)"
+        },
+        {
+            "label": "xmake: Build Windows x64 (Release)",
+            "type": "shell",
+            "command": "xmake",
+            "args": [
+                "config",
+                "-p",
+                "windows",
+                "-a",
+                "x64",
+                "-m",
+                "release",
+                "-y",
+                "&&",
+                "xmake",
+                "build"
+            ],
+            "group": "build",
+            "problemMatcher": [
+                "$msCompile"
+            ],
+            "detail": "Build OmegaRenderHook, the tools and the self-test for Windows x64 in release mode"
+        },
+        {
+            "label": "Self-test Windows x64 (Release)",
+            "type": "shell",
+            "command": "${workspaceFolder}/Build/Release/x64/OmegaRenderHook-SelfTest.exe",
+            "args": [],
+            "dependsOn": "xmake: Build Windows x64 (Release)",
+            "problemMatcher": [],
+            "group": "test",
+            "detail": "Build then run the pipeline self-test (x64, release)"
+        },
+        {
+            "label": "Inject test overlay Windows x64 (Release)",
+            "type": "shell",
+            "command": "${workspaceFolder}/Build/Release/x64/OmegaRenderHook-Injector.exe",
+            "args": [
+                "${input:process}",
+                "${workspaceFolder}/Build/Release/x64/OmegaRenderHook-TestOverlay.dll"
+            ],
+            "dependsOn": "xmake: Build Windows x64 (Release)",
+            "problemMatcher": [],
+            "detail": "Build then inject the test overlay into a running process (x64, release)"
+        },
+        {
+            "label": "xmake: Build Windows x86 (Debug)",
+            "type": "shell",
+            "command": "xmake",
+            "args": [
+                "config",
+                "-p",
+                "windows",
+                "-a",
+                "x86",
+                "-m",
+                "debug",
+                "-y",
+                "&&",
+                "xmake",
+                "build"
+            ],
+            "group": "build",
+            "problemMatcher": [
+                "$msCompile"
+            ],
+            "detail": "Build OmegaRenderHook, the tools and the self-test for Windows x86 in debug mode"
+        },
+        {
+            "label": "Self-test Windows x86 (Debug)",
+            "type": "shell",
+            "command": "${workspaceFolder}/Build/Debug/x86/OmegaRenderHook-SelfTest.exe",
+            "args": [],
+            "dependsOn": "xmake: Build Windows x86 (Debug)",
+            "problemMatcher": [],
+            "group": "test",
+            "detail": "Build then run the pipeline self-test (x86, debug)"
+        },
+        {
+            "label": "Inject test overlay Windows x86 (Debug)",
+            "type": "shell",
+            "command": "${workspaceFolder}/Build/Debug/x86/OmegaRenderHook-Injector.exe",
+            "args": [
+                "${input:process}",
+                "${workspaceFolder}/Build/Debug/x86/OmegaRenderHook-TestOverlay.dll"
+            ],
+            "dependsOn": "xmake: Build Windows x86 (Debug)",
+            "problemMatcher": [],
+            "detail": "Build then inject the test overlay into a running process (x86, debug)"
+        },
+        {
+            "label": "xmake: Build Windows x86 (Release)",
+            "type": "shell",
+            "command": "xmake",
+            "args": [
+                "config",
+                "-p",
+                "windows",
+                "-a",
+                "x86",
+                "-m",
+                "release",
+                "-y",
+                "&&",
+                "xmake",
+                "build"
+            ],
+            "group": "build",
+            "problemMatcher": [
+                "$msCompile"
+            ],
+            "detail": "Build OmegaRenderHook, the tools and the self-test for Windows x86 in release mode"
+        },
+        {
+            "label": "Self-test Windows x86 (Release)",
+            "type": "shell",
+            "command": "${workspaceFolder}/Build/Release/x86/OmegaRenderHook-SelfTest.exe",
+            "args": [],
+            "dependsOn": "xmake: Build Windows x86 (Release)",
+            "problemMatcher": [],
+            "group": "test",
+            "detail": "Build then run the pipeline self-test (x86, release)"
+        },
+        {
+            "label": "Inject test overlay Windows x86 (Release)",
+            "type": "shell",
+            "command": "${workspaceFolder}/Build/Release/x86/OmegaRenderHook-Injector.exe",
+            "args": [
+                "${input:process}",
+                "${workspaceFolder}/Build/Release/x86/OmegaRenderHook-TestOverlay.dll"
+            ],
+            "dependsOn": "xmake: Build Windows x86 (Release)",
+            "problemMatcher": [],
+            "detail": "Build then inject the test overlay into a running process (x86, release)"
+        }
+    ],
+    "inputs": [
+        {
+            "id": "process",
+            "type": "promptString",
+            "description": "Process name or PID",
+            "default": "Palworld-Win64-Shipping.exe"
+        }
+    ]
+}

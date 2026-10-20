@@ -1,0 +1,46 @@
+name: CI
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        build_configuration: [debug, release]
+        architecture: [x64, x86]
+    env:
+      OUTPUT_DIR: Build/${{ matrix.build_configuration == 'debug' && 'Debug' || 'Release' }}/${{ matrix.architecture }}
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+    - name: Install XMake
+      uses: xmake-io/github-action-setup-xmake@v1
+      with:
+        xmake-version: latest
+    - name: Configure XMake
+      run: |
+        xmake f -m ${{ matrix.build_configuration }} -a ${{ matrix.architecture }} -y
+    - name: Build with XMake
+      run: |
+        xmake build
+    - name: Upload Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: OmegaRenderHook-${{ matrix.build_configuration }}-${{ matrix.architecture }}
+        path: |
+          ${{ env.OUTPUT_DIR }}/OmegaRenderHook-TestOverlay.dll
+          ${{ env.OUTPUT_DIR }}/OmegaRenderHook-Injector.exe
+          ${{ env.OUTPUT_DIR }}/OmegaRenderHook-SelfTest.exe
+        if-no-files-found: error
+    - name: Run Self-Test
+      run: |
+        & "${{ env.OUTPUT_DIR }}/OmegaRenderHook-SelfTest.exe" --warp
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
