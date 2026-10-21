@@ -5,6 +5,7 @@
 #include "OmegaRenderHook/Render/DX10/RendererDX10.hpp"
 #include "OmegaRenderHook/Render/DX11/DepthDX11.hpp"
 #include "OmegaRenderHook/Render/DX11/RendererDX11.hpp"
+#include "OmegaRenderHook/Render/DX12/DepthDX12.hpp"
 #include "OmegaRenderHook/Render/DX12/QueueResolver.hpp"
 #include "OmegaRenderHook/Render/DX12/RendererDX12.hpp"
 #include "OmegaRenderHook/Render/DX9/HookDX9.hpp"
@@ -198,6 +199,7 @@ namespace OmegaRenderHook
 			rState.pDX11.reset();
 			rState.pDX10.reset();
 			DepthDX11::Reset();
+			DepthDX12::Reset();
 			rState.stStatus.eApi = ERenderApi::None;
 			rState.stStatus.eQueueSource = EQueueSource::None;
 			Log(ELogLevel::Info, "{} renderer detached ({})", ToString(eApi), ToString(eReason));
@@ -267,6 +269,7 @@ namespace OmegaRenderHook
 				return false;
 			}
 
+			static_cast<void>(DepthDX12::Install(pDevice.Get(), rState.pDX12->Device().uFramesInFlight));
 			rState.bReportedUnresolved = false;
 			rState.stStatus.eApi = ERenderApi::DX12;
 			rState.stStatus.eQueueSource = stQueue.eSource;
@@ -820,6 +823,18 @@ namespace OmegaRenderHook
 
 	namespace Pipeline
 	{
+		void PrepareEarly(bool bHookVulkan)
+		{
+			DepthDX12::PrepareEarly();
+			if (bHookVulkan)
+				HookVulkan::PrepareEarly();
+		}
+
+		void NoteVulkanDevice(void* hDevice, void* hPhysicalDevice)
+		{
+			HookVulkan::NoteDevice(hDevice, hPhysicalDevice);
+		}
+
 		std::expected<void, std::string> Install(const stPipelineConfig& stConfig)
 		{
 			stState& rState = State();
@@ -886,7 +901,14 @@ namespace OmegaRenderHook
 		{
 			stState& rState = State();
 			if (!IsInstalled())
-				return true;
+			{
+				bool bEarlyRestored = DepthDX12::Disable();
+				bEarlyRestored = HookVulkan::DisableEarly() && bEarlyRestored;
+				const bool bEarlyDrained = clHookScope::WaitForDrain(std::chrono::milliseconds(2000));
+				DepthDX12::Release(bEarlyDrained);
+				HookVulkan::ReleaseEarly(bEarlyDrained);
+				return bEarlyRestored && bEarlyDrained;
+			}
 			HookDX9::RequestDetach(std::chrono::milliseconds(1000));
 			HookOpenGL::RequestDetach(std::chrono::milliseconds(1000));
 			HookVulkan::RequestDetach(std::chrono::milliseconds(1000));
@@ -904,6 +926,7 @@ namespace OmegaRenderHook
 				bRestored = HookOpenGL::Disable() && bRestored;
 				bRestored = HookVulkan::Disable() && bRestored;
 				bRestored = DepthDX11::Disable() && bRestored;
+				bRestored = DepthDX12::Disable() && bRestored;
 			}
 
 			const bool bDrained = clHookScope::WaitForDrain(std::chrono::milliseconds(2000));
@@ -913,6 +936,7 @@ namespace OmegaRenderHook
 			HookOpenGL::Release(bDrained);
 			HookVulkan::Release(bDrained);
 			DepthDX11::Release(bDrained);
+			DepthDX12::Release(bDrained);
 
 			std::scoped_lock lckState(rState.mtxState);
 			if (bDrained)

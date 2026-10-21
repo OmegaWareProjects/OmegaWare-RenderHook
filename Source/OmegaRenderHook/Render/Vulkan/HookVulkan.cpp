@@ -6,12 +6,14 @@
 #include "OmegaRenderHook/Hook/HookScope.hpp"
 #include "OmegaRenderHook/Hook/InlineHook.hpp"
 #include "OmegaRenderHook/Render/PipelineInternal.hpp"
+#include "OmegaRenderHook/Render/Vulkan/DepthVulkan.hpp"
 
 #include <array>
 #include <cstring>
 #include <memory>
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #define OMEGARENDERHOOK_VK_INSTANCE_FUNCTIONS(X) \
@@ -163,8 +165,10 @@ namespace OmegaRenderHook::HookVulkan
 			stHookGroup stDestroyDevice;
 
 			std::unordered_map<VkDevice, std::size_t> mapDevices;
+			std::unordered_map<VkDevice, VkPhysicalDevice> mapEarlyDevices;
 			std::unordered_map<VkSurfaceKHR, HWND> mapSurfaces;
 			std::unordered_map<VkSwapchainKHR, stSwapchain> mapSwapchains;
+			std::unordered_set<VkDevice> setForcedDevices;
 			std::unordered_map<VkQueue, stQueue> mapQueues;
 			std::unique_ptr<stRenderer> pRenderer;
 			PipelineInternal::clDetachRequest clDetach;
@@ -283,6 +287,7 @@ namespace OmegaRenderHook::HookVulkan
 					rVk.vkDestroySemaphore(hDevice, rImage.hRenderDone, nullptr);
 			}
 			rRenderer.aImages.clear();
+			DepthVulkan::Detach();
 			if (rRenderer.hRenderPass)
 				rVk.vkDestroyRenderPass(hDevice, rRenderer.hRenderPass, nullptr);
 			rRenderer.hRenderPass = VK_NULL_HANDLE;
@@ -305,8 +310,9 @@ namespace OmegaRenderHook::HookVulkan
 			Log(ELogLevel::Info, "Vulkan renderer detached ({})", ToString(eReason));
 		}
 
-		[[nodiscard]] bool CreateObjects(stRenderer& rRenderer, const stSwapchain& rSwapchain, std::uint32_t uFamily)
+		[[nodiscard]] bool CreateObjects(stRenderer& rRenderer, const stSwapchain& rSwapchain, std::uint32_t uFamily, VkPhysicalDevice hPhysical)
 		{
+			PipelineInternal::clOwnWork clOwn;
 			const stDeviceFunctions& rVk = rRenderer.stVk;
 			const VkDevice hDevice = rRenderer.hDevice;
 
@@ -327,25 +333,41 @@ namespace OmegaRenderHook::HookVulkan
 			stColor.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
 			stColor.initialLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
 			stColor.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+			VkAttachmentDescription stDepth{};
+			stDepth.format = DepthVulkan::eTargetFormat;
+			stDepth.samples = VK_SAMPLE_COUNT_1_BIT;
+			stDepth.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+			stDepth.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+			stDepth.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+			stDepth.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+			stDepth.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+			stDepth.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+			const std::array<VkAttachmentDescription, 2> aAttachments{ stColor, stDepth };
 			const VkAttachmentReference stReference{ 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
+			const VkAttachmentReference stDepthReference{ 1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL };
 			VkSubpassDescription stSubpass{};
 			stSubpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
 			stSubpass.colorAttachmentCount = 1;
 			stSubpass.pColorAttachments = &stReference;
+			stSubpass.pDepthStencilAttachment = &stDepthReference;
 			VkSubpassDependency stDependency{};
 			stDependency.srcSubpass = VK_SUBPASS_EXTERNAL;
 			stDependency.dstSubpass = 0;
-			stDependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-			stDependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-			stDependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+			stDependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+			stDependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+			stDependency.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+			stDependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 			VkRenderPassCreateInfo stPass{ VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO };
-			stPass.attachmentCount = 1;
-			stPass.pAttachments = &stColor;
+			stPass.attachmentCount = static_cast<std::uint32_t>(aAttachments.size());
+			stPass.pAttachments = aAttachments.data();
 			stPass.subpassCount = 1;
 			stPass.pSubpasses = &stSubpass;
 			stPass.dependencyCount = 1;
 			stPass.pDependencies = &stDependency;
 			if (rVk.vkCreateRenderPass(hDevice, &stPass, nullptr, &rRenderer.hRenderPass) != VK_SUCCESS)
+				return false;
+			const VkImageView hDepthView = DepthVulkan::Attach({ hDevice, hPhysical, rRenderer.hRenderPass, rSwapchain.stExtent, uImages });
+			if (!hDepthView)
 				return false;
 
 			rRenderer.aImages.resize(aImages.size());
@@ -361,8 +383,9 @@ namespace OmegaRenderHook::HookVulkan
 					return false;
 				VkFramebufferCreateInfo stFramebuffer{ VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
 				stFramebuffer.renderPass = rRenderer.hRenderPass;
-				stFramebuffer.attachmentCount = 1;
-				stFramebuffer.pAttachments = &rImage.hView;
+				const std::array<VkImageView, 2> aViews{ rImage.hView, hDepthView };
+				stFramebuffer.attachmentCount = static_cast<std::uint32_t>(aViews.size());
+				stFramebuffer.pAttachments = aViews.data();
 				stFramebuffer.width = rSwapchain.stExtent.width;
 				stFramebuffer.height = rSwapchain.stExtent.height;
 				stFramebuffer.layers = 1;
@@ -442,7 +465,8 @@ namespace OmegaRenderHook::HookVulkan
 				Log(ELogLevel::Error, "could not load the Vulkan device functions the overlay needs");
 				return nullptr;
 			}
-			if (!CreateObjects(*pRenderer, rSwapchain, uFamily))
+			DepthVulkan::OnDeviceCreated(pRenderer->hDevice, rPhysical.hHandle);
+			if (!CreateObjects(*pRenderer, rSwapchain, uFamily, rPhysical.hHandle))
 			{
 				Log(ELogLevel::Error, "failed to create the Vulkan overlay render objects");
 				pRenderer->stVk.vkDeviceWaitIdle(pRenderer->hDevice);
@@ -489,7 +513,9 @@ namespace OmegaRenderHook::HookVulkan
 			if (!pListener)
 				return false;
 
+			PipelineInternal::clOwnWork clOwn;
 			const stDeviceFunctions& rVk = pRenderer->stVk;
+			const std::uint32_t uSlotIndex = static_cast<std::uint32_t>(pRenderer->uSlot);
 			stSlot& rSlot = pRenderer->aSlots[pRenderer->uSlot];
 			if (rVk.vkWaitForFences(pRenderer->hDevice, 1, &rSlot.hFence, VK_TRUE, uFenceTimeout) != VK_SUCCESS)
 			{
@@ -504,22 +530,30 @@ namespace OmegaRenderHook::HookVulkan
 				PipelineInternal::CountFrame(false);
 				return false;
 			}
+			const bool bDepth = DepthVulkan::BeforePass(rSlot.hCommand, uSlotIndex);
+			std::array<VkClearValue, 2> aClear{};
+			aClear[1].depthStencil = { 1.f, 0 };
 			VkRenderPassBeginInfo stPass{ VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
 			stPass.renderPass = pRenderer->hRenderPass;
 			stPass.framebuffer = pRenderer->aImages[uImageIndex].hFramebuffer;
 			stPass.renderArea = { { 0, 0 }, rSwapchain.stExtent };
+			stPass.clearValueCount = static_cast<std::uint32_t>(aClear.size());
+			stPass.pClearValues = aClear.data();
 			rVk.vkCmdBeginRenderPass(rSlot.hCommand, &stPass, VK_SUBPASS_CONTENTS_INLINE);
+			if (bDepth)
+				DepthVulkan::InPass(rSlot.hCommand, uSlotIndex);
 
 			pRenderer->stDevice.hWindow = hWindow;
 			pRenderer->stDevice.uWidth = rSwapchain.stExtent.width;
 			pRenderer->stDevice.uHeight = rSwapchain.stExtent.height;
-			stFrameVulkan stFrame{ &pRenderer->stDevice, rSlot.hCommand, rSwapchain.stExtent, uImageIndex, pRenderer->uFrameNumber++ };
+			stFrameVulkan stFrame{ &pRenderer->stDevice, rSlot.hCommand, rSwapchain.stExtent, bDepth, bDepth && DepthVulkan::ReversedZ(), uImageIndex, pRenderer->uFrameNumber++ };
 			auto fnFrame = [&] { pListener->OnFrame(stFrame); };
 			stFault stFault;
 			if (!InvokeGuarded(fnFrame, stFault))
 				PipelineInternal::ReportFault("OnFrame", stFault);
 
 			rVk.vkCmdEndRenderPass(rSlot.hCommand);
+			DepthVulkan::AfterPass(rSlot.hCommand, bDepth);
 			if (rVk.vkEndCommandBuffer(rSlot.hCommand) != VK_SUCCESS)
 			{
 				PipelineInternal::CountFrame(false);
@@ -587,7 +621,15 @@ namespace OmegaRenderHook::HookVulkan
 				return false;
 			stSwapchain& rSwapchain = rState.mapSwapchains[hSwapchain];
 			rSwapchain.hDevice = hDevice;
-			Log(ELogLevel::Info, "Vulkan swap chain was created before install, reporting it out of date once so the game recreates it");
+			if (!rState.setForcedDevices.insert(hDevice).second)
+			{
+				Log(ELogLevel::Warning, "Vulkan swap chain {} was not seen being created even after a forced recreate, the overlay skips it", static_cast<void*>(hSwapchain));
+				return false;
+			}
+			const auto itDevice = rState.mapDevices.find(hDevice);
+			if (!rState.aPhysical.empty())
+				DepthVulkan::OnDeviceCreated(hDevice, rState.aPhysical[itDevice == rState.mapDevices.end() ? GuessPhysical(rState) : itDevice->second].hHandle);
+			Log(ELogLevel::Info, "Vulkan swap chain {} was created before install, reporting it out of date once so the game recreates it", static_cast<void*>(hSwapchain));
 			return true;
 		}
 
@@ -611,6 +653,8 @@ namespace OmegaRenderHook::HookVulkan
 		VkResult OnCreateSwapchain(PFN_vkCreateSwapchainKHR pfnNext, VkDevice hDevice, const VkSwapchainCreateInfoKHR* pInfo, const VkAllocationCallbacks* pAllocator, VkSwapchainKHR* pSwapchain)
 		{
 			const VkResult eResult = pfnNext(hDevice, pInfo, pAllocator, pSwapchain);
+			if (eResult != VK_SUCCESS)
+				Log(ELogLevel::Debug, "Vulkan swap chain creation failed ({})", static_cast<int>(eResult));
 			if (eResult != VK_SUCCESS || !pInfo || !pSwapchain || !*pSwapchain)
 				return eResult;
 			stState& rState = State();
@@ -623,6 +667,7 @@ namespace OmegaRenderHook::HookVulkan
 			rSwapchain.stExtent = pInfo->imageExtent;
 			rSwapchain.eUsage = pInfo->imageUsage;
 			rSwapchain.bKnown = true;
+			Log(ELogLevel::Debug, "Vulkan swap chain {} created ({}x{}, format {}, replaces {})", static_cast<void*>(*pSwapchain), pInfo->imageExtent.width, pInfo->imageExtent.height, static_cast<int>(pInfo->imageFormat), static_cast<void*>(pInfo->oldSwapchain));
 			return eResult;
 		}
 
@@ -646,6 +691,7 @@ namespace OmegaRenderHook::HookVulkan
 				if (rState.pRenderer && rState.pRenderer->hDevice == hDevice)
 					DestroyRenderer(rState, EDetachReason::DeviceLost, VK_NULL_HANDLE);
 				std::erase_if(rState.mapSwapchains, [&](const auto& rEntry) { return rEntry.second.hDevice == hDevice; });
+				rState.setForcedDevices.erase(hDevice);
 				std::erase_if(rState.mapQueues, [&](const auto& rEntry) { return rEntry.second.hDevice == hDevice; });
 				rState.mapDevices.erase(hDevice);
 			}
@@ -736,9 +782,14 @@ namespace OmegaRenderHook::HookVulkan
 			const VkResult eResult = rState.clCreateDevice.Original<PFN_vkCreateDevice>()(hPhysical, pInfo, pAllocator, pDevice);
 			if (eResult == VK_SUCCESS && pDevice && *pDevice)
 			{
-				std::scoped_lock lckRender(rState.mtxRender);
-				if (const std::size_t uPhysical = FindPhysical(rState, hPhysical); uPhysical != SIZE_MAX)
-					rState.mapDevices[*pDevice] = uPhysical;
+				{
+					std::scoped_lock lckRender(rState.mtxRender);
+					if (const std::size_t uPhysical = FindPhysical(rState, hPhysical); uPhysical != SIZE_MAX)
+						rState.mapDevices[*pDevice] = uPhysical;
+					else if (!rState.bInstalled)
+						rState.mapEarlyDevices[*pDevice] = hPhysical;
+				}
+				DepthVulkan::OnDeviceCreated(*pDevice, hPhysical);
 			}
 			return eResult;
 		}
@@ -817,6 +868,26 @@ namespace OmegaRenderHook::HookVulkan
 			}
 		}
 
+		void HookSwapchainTracking(stState& rState, VkDevice hDevice)
+		{
+			const HMODULE hLoader = GetModuleHandleW(L"vulkan-1.dll");
+			const auto pfnGetDeviceProcAddr = hLoader ? reinterpret_cast<PFN_vkGetDeviceProcAddr>(reinterpret_cast<void*>(GetProcAddress(hLoader, "vkGetDeviceProcAddr"))) : nullptr;
+			if (!pfnGetDeviceProcAddr)
+				return;
+			if (!rState.stCreateSwapchain.szName)
+				SetupGroups(rState);
+			std::size_t uHooks = 0;
+			for (stHookGroup* pGroup : { &rState.stCreateSwapchain, &rState.stDestroySwapchain })
+			{
+				AddTarget(*pGroup, reinterpret_cast<void*>(pfnGetDeviceProcAddr(hDevice, pGroup->szName)));
+				for (std::size_t i = 0; i < pGroup->uTargets; ++i)
+					if (!pGroup->aHooks[i].IsInstalled() && pGroup->aHooks[i].Install(pGroup->aTargets[i], pGroup->aDetours[i]))
+						++uHooks;
+			}
+			if (uHooks)
+				Log(ELogLevel::Debug, "Vulkan swap chain creation hooked early on device {} ({} functions)", static_cast<void*>(hDevice), uHooks);
+		}
+
 		void UninstallHooks(stState& rState)
 		{
 			ForEachGroup(rState, [](stHookGroup& rGroup)
@@ -837,6 +908,61 @@ namespace OmegaRenderHook::HookVulkan
 			rState.stInstance = {};
 			rState.aPhysical.clear();
 		}
+	}
+
+	void PrepareEarly()
+	{
+		stState& rState = State();
+		std::scoped_lock lckRender(rState.mtxRender);
+		if (rState.bInstalled || rState.clCreateDevice.IsInstalled())
+			return;
+		const HMODULE hLoader = GetModuleHandleW(L"vulkan-1.dll");
+		void* pCreateDevice = hLoader ? reinterpret_cast<void*>(GetProcAddress(hLoader, "vkCreateDevice")) : nullptr;
+		if (pCreateDevice && rState.clCreateDevice.Install(pCreateDevice, reinterpret_cast<void*>(&HookCreateDevice)))
+			Log(ELogLevel::Debug, "Vulkan device creation hooked early for depth tracking");
+	}
+
+	void NoteDevice(void* hDevice, void* hPhysicalDevice)
+	{
+		const auto hVkDevice = static_cast<VkDevice>(hDevice);
+		const auto hVkPhysical = static_cast<VkPhysicalDevice>(hPhysicalDevice);
+		if (!hVkDevice)
+			return;
+		{
+			stState& rState = State();
+			std::scoped_lock lckRender(rState.mtxRender);
+			if (rState.bInstalled)
+			{
+				if (const std::size_t uPhysical = FindPhysical(rState, hVkPhysical); uPhysical != SIZE_MAX)
+					rState.mapDevices[hVkDevice] = uPhysical;
+			}
+			else
+			{
+				rState.mapEarlyDevices[hVkDevice] = hVkPhysical;
+				HookSwapchainTracking(rState, hVkDevice);
+			}
+		}
+		DepthVulkan::OnDeviceCreated(hVkDevice, hVkPhysical);
+	}
+
+	bool DisableEarly()
+	{
+		stState& rState = State();
+		bool bRestored = rState.clCreateDevice.Disable();
+		for (stHookGroup* pGroup : { &rState.stCreateSwapchain, &rState.stDestroySwapchain })
+			for (clInlineHook& rHook : pGroup->aHooks)
+				bRestored = rHook.Disable() && bRestored;
+		return DepthVulkan::Disable() && bRestored;
+	}
+
+	void ReleaseEarly(bool bDrained)
+	{
+		stState& rState = State();
+		DepthVulkan::Release(bDrained);
+		std::scoped_lock lckRender(rState.mtxRender);
+		rState.mapEarlyDevices.clear();
+		if (bDrained && !rState.bInstalled)
+			UninstallHooks(rState);
 	}
 
 	bool Install()
@@ -906,7 +1032,8 @@ namespace OmegaRenderHook::HookVulkan
 			return false;
 		}
 
-		SetupGroups(rState);
+		if (!rState.stCreateSwapchain.szName)
+			SetupGroups(rState);
 		CaptureTargets(rState);
 		if (!rState.stQueuePresent.uTargets || !rState.stCreateSwapchain.uTargets || !rState.stDestroySwapchain.uTargets)
 		{
@@ -915,7 +1042,11 @@ namespace OmegaRenderHook::HookVulkan
 			return false;
 		}
 
-		bool bHooked = rState.clCreateDevice.Install(pCreateDevice, reinterpret_cast<void*>(&HookCreateDevice));
+		bool bHooked = rState.clCreateDevice.IsInstalled() || rState.clCreateDevice.Install(pCreateDevice, reinterpret_cast<void*>(&HookCreateDevice));
+		for (const auto& [hDevice, hPhysical] : rState.mapEarlyDevices)
+			if (const std::size_t uPhysical = FindPhysical(rState, hPhysical); uPhysical != SIZE_MAX)
+				rState.mapDevices[hDevice] = uPhysical;
+		rState.mapEarlyDevices.clear();
 		if (pCreateWin32Surface)
 			bHooked = rState.clCreateWin32Surface.Install(pCreateWin32Surface, reinterpret_cast<void*>(&HookCreateWin32Surface)) && bHooked;
 		std::size_t uHooks = 0;
@@ -923,6 +1054,8 @@ namespace OmegaRenderHook::HookVulkan
 		{
 			for (std::size_t i = 0; i < rGroup.uTargets; ++i)
 			{
+				if (rGroup.aHooks[i].IsInstalled())
+					continue;
 				if (rGroup.aHooks[i].Install(rGroup.aTargets[i], rGroup.aDetours[i]))
 					++uHooks;
 				else
@@ -962,6 +1095,7 @@ namespace OmegaRenderHook::HookVulkan
 	{
 		stState& rState = State();
 		bool bRestored = rState.clCreateDevice.Disable();
+		bRestored = DepthVulkan::Disable() && bRestored;
 		bRestored = rState.clCreateWin32Surface.Disable() && bRestored;
 		ForEachGroup(rState, [&](stHookGroup& rGroup)
 		{
@@ -980,7 +1114,10 @@ namespace OmegaRenderHook::HookVulkan
 		rState.mapDevices.clear();
 		rState.mapSurfaces.clear();
 		rState.mapSwapchains.clear();
+		rState.setForcedDevices.clear();
 		rState.mapQueues.clear();
+		rState.mapEarlyDevices.clear();
+		DepthVulkan::Release(bDrained);
 		if (bDrained)
 		{
 			UninstallHooks(rState);
@@ -994,9 +1131,26 @@ namespace OmegaRenderHook::HookVulkan
 
 namespace OmegaRenderHook::HookVulkan
 {
+	void PrepareEarly()
+	{
+	}
+
+	void NoteDevice(void*, void*)
+	{
+	}
+
 	bool Install()
 	{
 		return false;
+	}
+
+	bool DisableEarly()
+	{
+		return true;
+	}
+
+	void ReleaseEarly(bool)
+	{
 	}
 
 	void RequestDetach(std::chrono::milliseconds)

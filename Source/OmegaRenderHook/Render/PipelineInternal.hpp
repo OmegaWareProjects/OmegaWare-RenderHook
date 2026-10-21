@@ -31,6 +31,21 @@ namespace OmegaRenderHook::PipelineInternal
 		static inline thread_local int s_iDepth = 0;
 	};
 
+	class clOwnWork
+	{
+	public:
+		clOwnWork() { ++s_iDepth; }
+		~clOwnWork() { --s_iDepth; }
+
+		clOwnWork(const clOwnWork&) = delete;
+		clOwnWork& operator=(const clOwnWork&) = delete;
+
+		[[nodiscard]] static bool IsActive() { return s_iDepth > 0; }
+
+	private:
+		static inline thread_local int s_iDepth = 0;
+	};
+
 	template <typename F>
 	void CallListener(std::string_view strWhere, F&& fnCall)
 	{

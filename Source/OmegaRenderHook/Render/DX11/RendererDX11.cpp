@@ -1,5 +1,6 @@
 #include "OmegaRenderHook/Render/DX11/RendererDX11.hpp"
 #include "OmegaRenderHook/Render/DX11/DepthDX11.hpp"
+#include "OmegaRenderHook/Render/PipelineInternal.hpp"
 
 #include <array>
 
@@ -32,8 +33,6 @@ namespace OmegaRenderHook
 
 			clSavedTargets(const clSavedTargets&) = delete;
 			clSavedTargets& operator=(const clSavedTargets&) = delete;
-
-			[[nodiscard]] ID3D11DepthStencilView* DepthStencil() const { return m_pDepthStencil; }
 
 		private:
 			ID3D11DeviceContext* m_pContext;
@@ -82,11 +81,12 @@ namespace OmegaRenderHook
 
 		D3D11_TEXTURE2D_DESC stBackBuffer{};
 		pBackBuffer->GetDesc(&stBackBuffer);
-		DepthDX11::SetTarget(stBackBuffer.Width, stBackBuffer.Height, stBackBuffer.SampleDesc.Count);
+		DepthDX11::SetTarget(stBackBuffer.Width, stBackBuffer.Height);
 
 		{
+			PipelineInternal::clOwnWork clOwn;
 			clSavedTargets clSaved(m_pContext.Get());
-			const DepthDX11::stDepth stDepth = DepthDX11::Resolve(clSaved.DepthStencil());
+			const DepthDX11::stDepth stDepth = DepthDX11::Resolve();
 			ID3D11RenderTargetView* const aTargets[] = { pRenderTarget.Get() };
 			m_pContext->OMSetRenderTargets(1, aTargets, nullptr);
 			const D3D11_VIEWPORT stViewport{ 0.f, 0.f, static_cast<float>(m_stDevice.uWidth), static_cast<float>(m_stDevice.uHeight), 0.f, 1.f };
@@ -98,7 +98,7 @@ namespace OmegaRenderHook
 				stFrame.pDevice = &m_stDevice;
 				stFrame.pBackBuffer = pBackBuffer.Get();
 				stFrame.pRenderTarget = pRenderTarget.Get();
-				stFrame.pDepthStencil = stDepth.pView.Get();
+				stFrame.pDepthStencil = stDepth.pView;
 				stFrame.bReversedZ = stDepth.bReversedZ;
 				stFrame.uFrameNumber = m_uFrameNumber;
 				auto fnFrame = [&] { pListener->OnFrame(stFrame); };

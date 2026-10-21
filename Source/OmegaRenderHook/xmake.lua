@@ -17,5 +17,5 @@ target("OmegaRenderHook")
     end
 
     add_packages("safetyhook", { public = true })
-    add_syslinks("user32", "d3d11", "d3d12", "dxgi", "dxguid", "gdi32", "opengl32", { public = true })
+    add_syslinks("user32", "d3d11", "d3d12", "d3dcompiler", "dxgi", "dxguid", "gdi32", "opengl32", { public = true })
 target_end()

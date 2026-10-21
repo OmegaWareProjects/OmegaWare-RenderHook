@@ -18,5 +18,7 @@ namespace OmegaRenderHook
 		[[nodiscard]] bool IsInstalled();
 		void SetBlocking(const stInputBlock& stBlock);
 		[[nodiscard]] stInputBlock GetBlocking();
+		void SyncCursor();
+		[[nodiscard]] bool CursorForced();
 	}
 }

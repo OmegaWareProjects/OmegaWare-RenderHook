@@ -14,5 +14,6 @@ namespace OmegaRenderHook
 		[[nodiscard]] bool IsAttached();
 		[[nodiscard]] HWND Window();
 		void ReleaseHeldInput(bool bKeyboard, bool bMouse);
+		void Wake();
 	}
 }

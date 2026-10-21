@@ -76,6 +76,9 @@ namespace OmegaRenderHook
 		ID3D12GraphicsCommandList* pCommandList = nullptr;
 		ID3D12Resource* pBackBuffer = nullptr;
 		D3D12_CPU_DESCRIPTOR_HANDLE hRenderTarget{};
+		D3D12_CPU_DESCRIPTOR_HANDLE hDepthStencil{};
+		DXGI_FORMAT eDepthFormat = DXGI_FORMAT_UNKNOWN;
+		bool bReversedZ = false;
 		UINT uBackBufferIndex = 0;
 		UINT uFrameSlot = 0;
 		std::uint64_t uFrameNumber = 0;
@@ -175,6 +178,8 @@ namespace OmegaRenderHook
 		const stDeviceVulkan* pDevice = nullptr;
 		VkCommandBuffer hCommandBuffer = VK_NULL_HANDLE;
 		VkExtent2D stExtent{};
+		bool bHasDepth = false;
+		bool bReversedZ = false;
 		std::uint32_t uImageIndex = 0;
 		std::uint64_t uFrameNumber = 0;
 	};
@@ -239,6 +244,8 @@ namespace OmegaRenderHook
 
 	namespace Pipeline
 	{
+		void PrepareEarly(bool bHookVulkan = true);
+		void NoteVulkanDevice(void* hDevice, void* hPhysicalDevice);
 		[[nodiscard]] std::expected<void, std::string> Install(const stPipelineConfig& stConfig);
 		bool Uninstall();
 		[[nodiscard]] bool IsInstalled();

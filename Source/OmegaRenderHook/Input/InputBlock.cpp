@@ -60,6 +60,7 @@ namespace OmegaRenderHook
 		using FnSetCursorPos = BOOL(WINAPI*)(int, int);
 		using FnClipCursor = BOOL(WINAPI*)(const RECT*);
 		using FnSetCursor = HCURSOR(WINAPI*)(HCURSOR);
+		using FnShowCursor = int(WINAPI*)(BOOL);
 		using FnGetRawInputData = UINT(WINAPI*)(HRAWINPUT, UINT, LPVOID, PUINT, UINT);
 		using FnGetRawInputBuffer = UINT(WINAPI*)(PRAWINPUT, PUINT, UINT);
 		using FnXInputGetState = DWORD(WINAPI*)(DWORD, XINPUT_STATE*);
@@ -83,9 +84,21 @@ namespace OmegaRenderHook
 			std::vector<std::pair<DWORD, DWORD>> aNeutral;
 		};
 
+		constexpr std::size_t uDirectInputHooks = 8;
+		constexpr std::size_t uDirectInput7Base = 4;
+		constexpr std::size_t uGameInputCallbacks = 8;
+
+		namespace DeviceTypes
+		{
+			constexpr BYTE byLegacyMouse = 2;
+			constexpr BYTE byLegacyKeyboard = 3;
+			constexpr BYTE byLegacyJoystick = 4;
+		}
+
 		namespace GameInputSlots
 		{
 			constexpr std::array<std::size_t, 4> kReadings = { 4, 5, 6, 7 };
+			constexpr std::size_t uRegisterReadingCallback = 8;
 			constexpr std::size_t uAxisState = 9;
 			constexpr std::size_t uButtonState = 11;
 			constexpr std::size_t uSwitchState = 13;
@@ -105,6 +118,9 @@ namespace OmegaRenderHook
 			std::atomic<bool> bReadingHooked = false;
 			std::array<clInlineHook, GameInputSlots::kReadings.size()> aReadings;
 			std::array<clInlineHook, GameInputSlots::kStates.size()> aStates;
+			clInlineHook clRegisterReadingCallback;
+			std::array<clInlineHook, uGameInputCallbacks> aCallbacks;
+			std::size_t uCallbacks = 0;
 			std::mutex mtxMice;
 			std::unordered_map<void*, GameInputMouseState> mapMice;
 		};
@@ -128,6 +144,10 @@ namespace OmegaRenderHook
 			POINT stFrozenCursor{};
 			bool bHasGameClip = false;
 			RECT rcGameClip{};
+			std::atomic<bool> bCursorForced = false;
+			int iCursorBase = 0;
+			int iCursorShown = 0;
+			int iCursorDelta = 0;
 
 			clInlineHook clGetAsyncKeyState;
 			clInlineHook clGetKeyState;
@@ -136,11 +156,13 @@ namespace OmegaRenderHook
 			clInlineHook clSetCursorPos;
 			clInlineHook clClipCursor;
 			clInlineHook clSetCursor;
+			clInlineHook clShowCursor;
 			clInlineHook clGetRawInputData;
 			clInlineHook clGetRawInputBuffer;
 			std::array<stXInputHooks, kXInputModules.size()> aXInput;
 			bool bDirectInputHooked = false;
-			std::vector<std::unique_ptr<clInlineHook>> aDirectInput;
+			bool bDirectInput7Hooked = false;
+			std::array<clInlineHook, uDirectInputHooks> aDirectInput;
 			std::unordered_map<void*, void*> mapDirectInputOriginals;
 			std::mutex mtxDevices;
 			std::unordered_map<void*, EDeviceKind> mapDevices;
@@ -235,6 +257,16 @@ namespace OmegaRenderHook
 			return GetCursor();
 		}
 
+		int WINAPI DetourShowCursor(BOOL bShow)
+		{
+			clInputScope clScope;
+			stState& r = State();
+			if (!r.bCursorForced.load() || FromOwnModule(_ReturnAddress()))
+				return r.clShowCursor.Original<FnShowCursor>()(bShow);
+			r.iCursorDelta += bShow ? 1 : -1;
+			return r.iCursorBase + r.iCursorDelta;
+		}
+
 		void NeutralizeRawInput(RAWINPUT& rInput)
 		{
 			if (rInput.header.dwType == RIM_TYPEMOUSE && State().bMouse)
@@ -311,11 +343,11 @@ namespace OmegaRenderHook
 			if (SUCCEEDED(pDevice->GetCapabilities(&stCaps)))
 			{
 				const BYTE byType = GET_DIDEVICE_TYPE(stCaps.dwDevType);
-				if (byType == DI8DEVTYPE_KEYBOARD)
+				if (byType == DI8DEVTYPE_KEYBOARD || byType == DeviceTypes::byLegacyKeyboard)
 					eKind = EDeviceKind::Keyboard;
-				else if (byType == DI8DEVTYPE_MOUSE)
+				else if (byType == DI8DEVTYPE_MOUSE || byType == DeviceTypes::byLegacyMouse)
 					eKind = EDeviceKind::Mouse;
-				else if ((byType >= DI8DEVTYPE_JOYSTICK && byType <= DI8DEVTYPE_1STPERSON) || byType == DI8DEVTYPE_SUPPLEMENTAL)
+				else if ((byType >= DI8DEVTYPE_JOYSTICK && byType <= DI8DEVTYPE_1STPERSON) || byType == DI8DEVTYPE_SUPPLEMENTAL || byType == DeviceTypes::byLegacyJoystick)
 					eKind = EDeviceKind::Gamepad;
 			}
 			State().mapDevices[pDevice] = eKind;
@@ -379,7 +411,7 @@ namespace OmegaRenderHook
 		HRESULT WINAPI DetourGetDeviceState(IDirectInputDevice8W* pDevice, DWORD uSize, LPVOID pData)
 		{
 			clInputScope clScope;
-			const auto pfnOriginal = reinterpret_cast<FnGetDeviceState>(State().aDirectInput[uSlot]->Original<void*>());
+			const auto pfnOriginal = State().aDirectInput[uSlot].Original<FnGetDeviceState>();
 			const HRESULT hResult = pfnOriginal(pDevice, uSize, pData);
 			EDeviceKind eKind = EDeviceKind::Other;
 			if (SUCCEEDED(hResult) && pData && !FromOwnModule(_ReturnAddress()) && BlocksDevice(pDevice, eKind))
@@ -397,7 +429,7 @@ namespace OmegaRenderHook
 		HRESULT WINAPI DetourGetDeviceData(IDirectInputDevice8W* pDevice, DWORD uObjectSize, LPDIDEVICEOBJECTDATA pData, LPDWORD pInOut, DWORD uFlags)
 		{
 			clInputScope clScope;
-			const auto pfnOriginal = reinterpret_cast<FnGetDeviceData>(State().aDirectInput[uSlot]->Original<void*>());
+			const auto pfnOriginal = State().aDirectInput[uSlot].Original<FnGetDeviceData>();
 			const HRESULT hResult = pfnOriginal(pDevice, uObjectSize, pData, pInOut, uFlags);
 			EDeviceKind eKind = EDeviceKind::Other;
 			if (SUCCEEDED(hResult) && pData && pInOut && uObjectSize >= sizeof(DIDEVICEOBJECTDATA) && !FromOwnModule(_ReturnAddress()) && BlocksDevice(pDevice, eKind))
@@ -412,11 +444,15 @@ namespace OmegaRenderHook
 			return hResult;
 		}
 
-		const std::array<void*, 4> kDirectInputDetours = {
+		const std::array<void*, uDirectInputHooks> kDirectInputDetours = {
 			reinterpret_cast<void*>(&DetourGetDeviceState<0>),
 			reinterpret_cast<void*>(&DetourGetDeviceData<1>),
 			reinterpret_cast<void*>(&DetourGetDeviceState<2>),
 			reinterpret_cast<void*>(&DetourGetDeviceData<3>),
+			reinterpret_cast<void*>(&DetourGetDeviceState<4>),
+			reinterpret_cast<void*>(&DetourGetDeviceData<5>),
+			reinterpret_cast<void*>(&DetourGetDeviceState<6>),
+			reinterpret_cast<void*>(&DetourGetDeviceData<7>),
 		};
 
 		[[nodiscard]] constexpr std::size_t GameInputStateIndex(std::size_t uSlot)
@@ -598,6 +634,52 @@ namespace OmegaRenderHook
 			return hResult;
 		}
 
+		template <std::size_t uIndex>
+		void CALLBACK DetourGameInputCallback(GameInputCallbackToken uToken, void* pContext, IGameInputReading* pReading, bool bOverrun)
+		{
+			clInputScope clScope;
+			HookGameInputReading(pReading);
+			State().stGameInput.aCallbacks[uIndex].Original<GameInputReadingCallback>()(uToken, pContext, pReading, bOverrun);
+		}
+
+		template <std::size_t... uIndices>
+		constexpr auto MakeGameInputCallbackDetours(std::index_sequence<uIndices...>)
+		{
+			return std::array<void*, sizeof...(uIndices)>{ reinterpret_cast<void*>(&DetourGameInputCallback<uIndices>)... };
+		}
+
+		const auto kGameInputCallbackDetours = MakeGameInputCallbackDetours(std::make_index_sequence<uGameInputCallbacks>{});
+
+		void HookGameInputCallback(GameInputReadingCallback pfnCallback)
+		{
+			if (!pfnCallback)
+				return;
+			stGameInputHooks& rHooks = State().stGameInput;
+			std::scoped_lock lckGameInput(State().mtxGameInput);
+			for (std::size_t i = 0; i < rHooks.uCallbacks; ++i)
+				if (rHooks.aCallbacks[i].Target() == reinterpret_cast<void*>(pfnCallback))
+					return;
+			if (rHooks.uCallbacks == rHooks.aCallbacks.size())
+			{
+				Log(ELogLevel::Warning, "more than {} gameinput reading callbacks, extra ones are not watched", rHooks.aCallbacks.size());
+				return;
+			}
+			if (rHooks.aCallbacks[rHooks.uCallbacks].Install(reinterpret_cast<void*>(pfnCallback), kGameInputCallbackDetours[rHooks.uCallbacks]))
+			{
+				++rHooks.uCallbacks;
+				Log(ELogLevel::Info, "input block watches gameinput reading callback {}", reinterpret_cast<void*>(pfnCallback));
+			}
+		}
+
+		HRESULT STDMETHODCALLTYPE DetourGameInputRegisterReadingCallback(IGameInput* pInput, IGameInputDevice* pDevice, GameInputKind eKind, float flThreshold, void* pContext, GameInputReadingCallback pfnCallback, GameInputCallbackToken* pToken)
+		{
+			clInputScope clScope;
+			using FnRegister = HRESULT(STDMETHODCALLTYPE*)(IGameInput*, IGameInputDevice*, GameInputKind, float, void*, GameInputReadingCallback, GameInputCallbackToken*);
+			if (!FromOwnModule(_ReturnAddress()))
+				HookGameInputCallback(pfnCallback);
+			return State().stGameInput.clRegisterReadingCallback.Original<FnRegister>()(pInput, pDevice, eKind, flThreshold, pContext, pfnCallback, pToken);
+		}
+
 		const std::array<void*, GameInputSlots::kReadings.size()> kGameInputReadingDetours = {
 			reinterpret_cast<void*>(&DetourGameInputCurrentReading),
 			reinterpret_cast<void*>(&DetourGameInputRelativeReading<1>),
@@ -621,6 +703,7 @@ namespace OmegaRenderHook
 				void** ppVTable = *reinterpret_cast<void***>(pInput);
 				for (std::size_t i = 0; i < GameInputSlots::kReadings.size(); ++i)
 					static_cast<void>(rHooks.aReadings[i].Install(ppVTable[GameInputSlots::kReadings[i]], kGameInputReadingDetours[i]));
+				static_cast<void>(rHooks.clRegisterReadingCallback.Install(ppVTable[GameInputSlots::uRegisterReadingCallback], reinterpret_cast<void*>(&DetourGameInputRegisterReadingCallback)));
 				rHooks.bInputHooked = true;
 			}
 			IGameInputReading* pReading = nullptr;
@@ -668,6 +751,19 @@ namespace OmegaRenderHook
 			}
 		}
 
+		std::size_t InstallDirectInputHooks(const std::vector<void*>& aTargets, std::size_t uBase)
+		{
+			stState& r = State();
+			std::size_t uHooked = 0;
+			for (std::size_t i = 0; i < aTargets.size() && uBase + i < (uBase ? uDirectInputHooks : uDirectInput7Base); ++i)
+			{
+				const bool bDuplicate = std::ranges::any_of(r.aDirectInput, [&](const clInlineHook& rHook) { return rHook.IsInstalled() && rHook.Target() == aTargets[i]; });
+				if (!bDuplicate && r.aDirectInput[uBase + i].Install(aTargets[i], kDirectInputDetours[uBase + i]))
+					++uHooked;
+			}
+			return uHooked;
+		}
+
 		void HookDirectInput()
 		{
 			stState& r = State();
@@ -709,17 +805,39 @@ namespace OmegaRenderHook
 				pInputA->Release();
 			}
 
-			std::vector<void*> aHooked;
-			r.aDirectInput.reserve(kDirectInputDetours.size());
-			for (std::size_t i = 0; i < aTargets.size() && i < kDirectInputDetours.size(); ++i)
+			Log(ELogLevel::Info, "input block hooked {} directinput8 device methods", InstallDirectInputHooks(aTargets, 0));
+		}
+
+		void HookDirectInput7()
+		{
+			stState& r = State();
+			const HMODULE hModule = GetModuleHandleW(L"dinput.dll");
+			if (r.bDirectInput7Hooked || !hModule)
+				return;
+			r.bDirectInput7Hooked = true;
+
+			using FnDirectInputCreateEx = HRESULT(WINAPI*)(HINSTANCE, DWORD, REFIID, LPVOID*, LPUNKNOWN);
+			const auto pfnCreate = reinterpret_cast<FnDirectInputCreateEx>(GetProcAddress(hModule, "DirectInputCreateEx"));
+			if (!pfnCreate)
+				return;
+
+			std::vector<void*> aTargets;
+			for (const IID* pIid : { &IID_IDirectInput7W, &IID_IDirectInput7A })
 			{
-				auto pHook = std::make_unique<clInlineHook>();
-				const bool bDuplicate = std::find(aHooked.begin(), aHooked.end(), aTargets[i]) != aHooked.end();
-				if (!bDuplicate && pHook->Install(aTargets[i], kDirectInputDetours[i]))
-					aHooked.push_back(aTargets[i]);
-				r.aDirectInput.push_back(std::move(pHook));
+				IDirectInput7W* pInput = nullptr;
+				if (FAILED(pfnCreate(reinterpret_cast<HINSTANCE>(r.uOwnBase), 0x0700, *pIid, reinterpret_cast<void**>(&pInput), nullptr)) || !pInput)
+					continue;
+				IDirectInputDeviceW* pDevice = nullptr;
+				if (SUCCEEDED(pInput->CreateDevice(GUID_SysKeyboard, &pDevice, nullptr)) && pDevice)
+				{
+					void** ppVTable = *reinterpret_cast<void***>(pDevice);
+					aTargets.push_back(ppVTable[9]);
+					aTargets.push_back(ppVTable[10]);
+					pDevice->Release();
+				}
+				pInput->Release();
 			}
-			Log(ELogLevel::Info, "input block hooked {} directinput8 device methods", aHooked.size());
+			Log(ELogLevel::Info, "input block hooked {} directinput7 device methods", InstallDirectInputHooks(aTargets, uDirectInput7Base));
 		}
 	}
 
@@ -747,10 +865,12 @@ namespace OmegaRenderHook
 			bComplete &= HookExport(r.clSetCursorPos, L"user32.dll", "SetCursorPos", reinterpret_cast<void*>(&DetourSetCursorPos));
 			bComplete &= HookExport(r.clClipCursor, L"user32.dll", "ClipCursor", reinterpret_cast<void*>(&DetourClipCursor));
 			bComplete &= HookExport(r.clSetCursor, L"user32.dll", "SetCursor", reinterpret_cast<void*>(&DetourSetCursor));
+			bComplete &= HookExport(r.clShowCursor, L"user32.dll", "ShowCursor", reinterpret_cast<void*>(&DetourShowCursor));
 			bComplete &= HookExport(r.clGetRawInputData, L"user32.dll", "GetRawInputData", reinterpret_cast<void*>(&DetourGetRawInputData));
 			bComplete &= HookExport(r.clGetRawInputBuffer, L"user32.dll", "GetRawInputBuffer", reinterpret_cast<void*>(&DetourGetRawInputBuffer));
 			HookXInput();
 			HookDirectInput();
+			HookDirectInput7();
 			HookGameInput();
 			r.bInstalled = true;
 			Log(bComplete ? ELogLevel::Info : ELogLevel::Warning, "input block installed{}", bComplete ? "" : " (some user32 hooks failed)");
@@ -765,15 +885,18 @@ namespace OmegaRenderHook
 				return true;
 			SetBlocking({});
 
-			std::vector<clInlineHook*> aHooks = { &r.clGetAsyncKeyState, &r.clGetKeyState, &r.clGetKeyboardState, &r.clGetCursorPos, &r.clSetCursorPos, &r.clClipCursor, &r.clSetCursor, &r.clGetRawInputData, &r.clGetRawInputBuffer };
+			std::vector<clInlineHook*> aHooks = { &r.clGetAsyncKeyState, &r.clGetKeyState, &r.clGetKeyboardState, &r.clGetCursorPos, &r.clSetCursorPos, &r.clClipCursor, &r.clSetCursor, &r.clShowCursor, &r.clGetRawInputData, &r.clGetRawInputBuffer };
 			for (stXInputHooks& rXInput : r.aXInput)
 			{
 				aHooks.push_back(&rXInput.clGetState);
 				aHooks.push_back(&rXInput.clGetStateEx);
 			}
-			for (const auto& pHook : r.aDirectInput)
-				aHooks.push_back(pHook.get());
+			for (clInlineHook& rHook : r.aDirectInput)
+				aHooks.push_back(&rHook);
 			for (clInlineHook& rHook : r.stGameInput.aReadings)
+				aHooks.push_back(&rHook);
+			aHooks.push_back(&r.stGameInput.clRegisterReadingCallback);
+			for (clInlineHook& rHook : r.stGameInput.aCallbacks)
 				aHooks.push_back(&rHook);
 			for (clInlineHook& rHook : r.stGameInput.aStates)
 				aHooks.push_back(&rHook);
@@ -791,8 +914,9 @@ namespace OmegaRenderHook
 				pHook->Uninstall();
 			for (stXInputHooks& rXInput : r.aXInput)
 				rXInput.hModule = nullptr;
-			r.aDirectInput.clear();
 			r.bDirectInputHooked = false;
+			r.bDirectInput7Hooked = false;
+			r.stGameInput.uCallbacks = 0;
 			{
 				std::scoped_lock lckDevices(r.mtxDevices);
 				r.mapDevices.clear();
@@ -830,6 +954,7 @@ namespace OmegaRenderHook
 			if (r.bInstalled && (stBlock.bKeyboard || stBlock.bMouse || stBlock.bGamepad))
 			{
 				HookDirectInput();
+				HookDirectInput7();
 				HookGameInput();
 			}
 			if (bKeyboardRising || bMouseRising)
@@ -855,6 +980,8 @@ namespace OmegaRenderHook
 					pfnClipCursor(&r.rcGameClip);
 				}
 			}
+			if (stBlock.bMouse != bMouseBefore)
+				WindowHook::Wake();
 			r.bKeyboard = stBlock.bKeyboard;
 			r.bGamepad = stBlock.bGamepad;
 		}
@@ -862,6 +989,39 @@ namespace OmegaRenderHook
 		stInputBlock GetBlocking()
 		{
 			return { State().bKeyboard, State().bMouse, State().bGamepad };
+		}
+
+		void SyncCursor()
+		{
+			stState& r = State();
+			const bool bWant = r.bMouse.load();
+			if (bWant == r.bCursorForced.load())
+				return;
+			const auto pfnShowCursor = r.clShowCursor.IsInstalled() ? r.clShowCursor.Original<FnShowCursor>() : &::ShowCursor;
+			if (bWant)
+			{
+				int iCount = pfnShowCursor(TRUE);
+				r.iCursorShown = 1;
+				while (iCount < 0 && r.iCursorShown < 64)
+				{
+					iCount = pfnShowCursor(TRUE);
+					++r.iCursorShown;
+				}
+				r.iCursorBase = iCount - r.iCursorShown;
+				r.iCursorDelta = 0;
+				r.bCursorForced = true;
+				return;
+			}
+			r.bCursorForced = false;
+			for (int iSteps = r.iCursorDelta - r.iCursorShown; iSteps != 0; iSteps += iSteps < 0 ? 1 : -1)
+				pfnShowCursor(iSteps > 0);
+			r.iCursorShown = 0;
+			r.iCursorDelta = 0;
+		}
+
+		bool CursorForced()
+		{
+			return State().bCursorForced.load();
 		}
 	}
 }

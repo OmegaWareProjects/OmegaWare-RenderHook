@@ -2,6 +2,7 @@
 #include "OmegaRenderHook/Core/Guarded.hpp"
 #include "OmegaRenderHook/Core/Log.hpp"
 #include "OmegaRenderHook/Hook/HookScope.hpp"
+#include "OmegaRenderHook/Input/InputBlock.hpp"
 #include "OmegaRenderHook/Render/Pipeline.hpp"
 
 #include <array>
@@ -147,6 +148,7 @@ namespace OmegaRenderHook::WindowHook
 			clHookScope clScope;
 			const WNDPROC pfnOriginal = s_pfnOriginal.load(std::memory_order_acquire);
 			const bool bUnicode = s_bUnicode.load(std::memory_order_relaxed);
+			InputBlock::SyncCursor();
 
 			if (uMessage == ReleaseMessage())
 			{
@@ -222,6 +224,11 @@ namespace OmegaRenderHook::WindowHook
 		bool bRestored = true;
 		if (IsWindow(hWindow))
 		{
+			if (InputBlock::CursorForced())
+			{
+				DWORD_PTR uResult = 0;
+				SendMessageTimeoutW(hWindow, ReleaseMessage(), 0, 0, SMTO_BLOCK | SMTO_ABORTIFHUNG, 500, &uResult);
+			}
 			const bool bUnicode = s_bUnicode.load();
 			const LONG_PTR iCurrent = bUnicode ? GetWindowLongPtrW(hWindow, GWLP_WNDPROC) : GetWindowLongPtrA(hWindow, GWLP_WNDPROC);
 			if (iCurrent == reinterpret_cast<LONG_PTR>(&WindowProc))
@@ -263,5 +270,11 @@ namespace OmegaRenderHook::WindowHook
 		const WPARAM uWhat = (bKeyboard ? uReleaseKeyboard : 0) | (bMouse ? uReleaseMouse : 0);
 		if (hWindow && uWhat)
 			PostMessageW(hWindow, ReleaseMessage(), uWhat, 0);
+	}
+
+	void Wake()
+	{
+		if (const HWND hWindow = s_hWindow.load())
+			PostMessageW(hWindow, ReleaseMessage(), 0, 0);
 	}
 }

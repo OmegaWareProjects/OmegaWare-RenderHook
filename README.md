@@ -175,10 +175,10 @@ SafetyHook and Zydis are fetched by xmake on the first configure.
 
 | Script | Purpose |
 |---|---|
-| `Build.bat` / `.sh` | configure and build (`mode`, `arch`) |
-| `SelfTest.bat` / `.sh` | build and run the self-test (`mode`, `arch`, `--verbose` or `--warp` for the WARP software adapter) |
-| `Inject.bat` / `.sh` | inject the test overlay into a running process (`process`, `mode`, `arch`) |
-| `UpdateCompileCommands.bat` / `.sh` | write `.vscode/compile_commands.json` |
+| `Build.bat` | configure and build (`mode`, `arch`) |
+| `SelfTest.bat` | build and run the self-test (`mode`, `arch`, `--verbose` or `--warp` for the WARP software adapter) |
+| `Inject.bat` | inject the test overlay into a running process (`process`, `mode`, `arch`) |
+| `UpdateCompileCommands.bat` | write `.vscode/compile_commands.json` |
 
 ```bat
 Build.bat release x64

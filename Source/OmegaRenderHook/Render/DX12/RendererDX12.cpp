@@ -1,5 +1,7 @@
 #include "OmegaRenderHook/Render/DX12/RendererDX12.hpp"
 #include "OmegaRenderHook/Core/Log.hpp"
+#include "OmegaRenderHook/Render/DX12/DepthDX12.hpp"
+#include "OmegaRenderHook/Render/PipelineInternal.hpp"
 
 #include <algorithm>
 
@@ -112,6 +114,7 @@ namespace OmegaRenderHook
 		ID3D12GraphicsCommandList* pList = rSlot.pCommandList.Get();
 		if (FAILED(pList->Reset(rSlot.pAllocator.Get(), nullptr)))
 			return ERenderResult::Skipped;
+		PipelineInternal::clOwnWork clOwn;
 
 		const UINT uBackBuffer = pSwapChain->GetCurrentBackBufferIndex();
 		ComPtr<ID3D12Resource> pBackBuffer;
@@ -124,6 +127,9 @@ namespace OmegaRenderHook
 		D3D12_CPU_DESCRIPTOR_HANDLE hRenderTarget = m_pRenderTargetHeap->GetCPUDescriptorHandleForHeapStart();
 		hRenderTarget.ptr += static_cast<SIZE_T>(uBackBuffer) * m_uRenderTargetSize;
 		m_pDevice->CreateRenderTargetView(pBackBuffer.Get(), nullptr, hRenderTarget);
+
+		DepthDX12::SetTarget(m_stDevice.uWidth, m_stDevice.uHeight);
+		const DepthDX12::stDepth stDepth = DepthDX12::Resolve(pList, uSlot);
 
 		const D3D12_RESOURCE_BARRIER stToTarget = Transition(pBackBuffer.Get(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
 		pList->ResourceBarrier(1, &stToTarget);
@@ -140,6 +146,9 @@ namespace OmegaRenderHook
 			stFrame.pCommandList = pList;
 			stFrame.pBackBuffer = pBackBuffer.Get();
 			stFrame.hRenderTarget = hRenderTarget;
+			stFrame.hDepthStencil = stDepth.hView;
+			stFrame.eDepthFormat = stDepth.eFormat;
+			stFrame.bReversedZ = stDepth.bReversedZ;
 			stFrame.uBackBufferIndex = uBackBuffer;
 			stFrame.uFrameSlot = uSlot;
 			stFrame.uFrameNumber = m_uFrameNumber;
