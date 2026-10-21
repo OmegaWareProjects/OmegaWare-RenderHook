@@ -12,6 +12,7 @@
 #include <cstring>
 #include <memory>
 #include <mutex>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -59,6 +60,15 @@ namespace OmegaRenderHook::HookVulkan
 	{
 		constexpr std::size_t uMaxTargets = 4;
 		constexpr std::uint64_t uFenceTimeout = 1'000'000'000;
+
+		template <typename T>
+		[[nodiscard]] std::uint64_t HandleId(T hHandle)
+		{
+			if constexpr (std::is_pointer_v<T>)
+				return reinterpret_cast<std::uintptr_t>(hHandle);
+			else
+				return static_cast<std::uint64_t>(hHandle);
+		}
 
 		struct stInstanceFunctions
 		{
@@ -623,13 +633,13 @@ namespace OmegaRenderHook::HookVulkan
 			rSwapchain.hDevice = hDevice;
 			if (!rState.setForcedDevices.insert(hDevice).second)
 			{
-				Log(ELogLevel::Warning, "Vulkan swap chain {} was not seen being created even after a forced recreate, the overlay skips it", static_cast<void*>(hSwapchain));
+				Log(ELogLevel::Warning, "Vulkan swap chain {:#x} was not seen being created even after a forced recreate, the overlay skips it", HandleId(hSwapchain));
 				return false;
 			}
 			const auto itDevice = rState.mapDevices.find(hDevice);
 			if (!rState.aPhysical.empty())
 				DepthVulkan::OnDeviceCreated(hDevice, rState.aPhysical[itDevice == rState.mapDevices.end() ? GuessPhysical(rState) : itDevice->second].hHandle);
-			Log(ELogLevel::Info, "Vulkan swap chain {} was created before install, reporting it out of date once so the game recreates it", static_cast<void*>(hSwapchain));
+			Log(ELogLevel::Info, "Vulkan swap chain {:#x} was created before install, reporting it out of date once so the game recreates it", HandleId(hSwapchain));
 			return true;
 		}
 
@@ -667,7 +677,7 @@ namespace OmegaRenderHook::HookVulkan
 			rSwapchain.stExtent = pInfo->imageExtent;
 			rSwapchain.eUsage = pInfo->imageUsage;
 			rSwapchain.bKnown = true;
-			Log(ELogLevel::Debug, "Vulkan swap chain {} created ({}x{}, format {}, replaces {})", static_cast<void*>(*pSwapchain), pInfo->imageExtent.width, pInfo->imageExtent.height, static_cast<int>(pInfo->imageFormat), static_cast<void*>(pInfo->oldSwapchain));
+			Log(ELogLevel::Debug, "Vulkan swap chain {:#x} created ({}x{}, format {}, replaces {:#x})", HandleId(*pSwapchain), pInfo->imageExtent.width, pInfo->imageExtent.height, static_cast<int>(pInfo->imageFormat), HandleId(pInfo->oldSwapchain));
 			return eResult;
 		}
 
