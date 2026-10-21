@@ -220,6 +220,7 @@ namespace OmegaRenderHook
 		bool bOpenGL = true;
 		bool bVulkan = true;
 		bool bHookWindow = true;
+		bool bGameDepth = true;
 		HWND hTargetWindow = nullptr;
 	};
 

@@ -701,7 +701,9 @@ namespace OmegaRenderHook::DepthDX12
 		stState& rState = State();
 		std::scoped_lock lckDepth(rState.mtxDepth);
 		stDepth stResult;
-		if (rState.pChosen && rState.pSnapshot && !rState.bChosenUnsupported && EnsurePipeline(rState) && EnsureResolved(rState))
+		const auto itUsed = rState.pChosen ? rState.mapScores.find(rState.pChosen.Get()) : rState.mapScores.end();
+		const bool bUsedThisFrame = itUsed != rState.mapScores.end() && itUsed->second != UINT32_MAX && itUsed->second > 0;
+		if (rState.pChosen && rState.pSnapshot && !rState.bChosenUnsupported && (rState.bCaptured || bUsedThisFrame) && EnsurePipeline(rState) && EnsureResolved(rState))
 		{
 			const auto pfnBarrier = rState.clResourceBarrier.IsInstalled() ? rState.clResourceBarrier.Original<ResourceBarrierFn>() : nullptr;
 			auto fnBarrier = [&](UINT uCount, const D3D12_RESOURCE_BARRIER* pBarriers)

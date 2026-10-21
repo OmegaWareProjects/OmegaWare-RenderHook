@@ -269,7 +269,8 @@ namespace OmegaRenderHook
 				return false;
 			}
 
-			static_cast<void>(DepthDX12::Install(pDevice.Get(), rState.pDX12->Device().uFramesInFlight));
+			if (rState.stConfig.bGameDepth)
+				static_cast<void>(DepthDX12::Install(pDevice.Get(), rState.pDX12->Device().uFramesInFlight));
 			rState.bReportedUnresolved = false;
 			rState.stStatus.eApi = ERenderApi::DX12;
 			rState.stStatus.eQueueSource = stQueue.eSource;
@@ -288,7 +289,8 @@ namespace OmegaRenderHook
 				return false;
 
 			rState.pDX11 = clRendererDX11::Create(pSwapChain, pDevice, stDesc);
-			static_cast<void>(DepthDX11::Install(rState.pDX11->Device().pContext));
+			if (rState.stConfig.bGameDepth)
+				static_cast<void>(DepthDX11::Install(rState.pDX11->Device().pContext));
 			rState.stStatus.eApi = ERenderApi::DX11;
 			rState.stStatus.eQueueSource = EQueueSource::None;
 			Log(ELogLevel::Info, "Direct3D 11 renderer attached: {}x{} format {} buffers {}", stDesc.BufferDesc.Width, stDesc.BufferDesc.Height, static_cast<int>(stDesc.BufferDesc.Format), stDesc.BufferCount);
@@ -891,6 +893,8 @@ namespace OmegaRenderHook
 			rState.bInstalled = true;
 			rState.stStatus.bInstalled = true;
 			rState.bActive.store(true, std::memory_order_release);
+			if (!stConfig.bGameDepth)
+				Log(ELogLevel::Info, "game depth tracking is off, world drawing will not be occluded");
 			Log(ELogLevel::Info, "pipeline installed ({} hooks, Direct3D 12 {}, Direct3D 11 {}, Direct3D 10 {}, Direct3D 9 {}, OpenGL {}, Vulkan {})", ToString(stConfig.eHookMethod),
 				expTables->aSwapChains[uKindDX12] ? "on" : "off", expTables->aSwapChains[uKindDX11] ? "on" : "off", stConfig.bDX10 && expTables->aSwapChains[uKindDX11] ? "on" : "off",
 				bDX9 ? "on" : "off", bOpenGL ? "on" : "off", bVulkan ? "on" : "off");
