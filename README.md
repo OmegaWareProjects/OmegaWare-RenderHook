@@ -6,7 +6,7 @@ every frame on Direct3D 9, 10, 11 and 12 and OpenGL, forwards window messages an
 polled input while your menu is open. It is built to survive NVIDIA DLSS, DLSS Frame Generation, Reflex and
 Streamline, the Steam overlay and the game recreating or resizing its swap chain.
 
-It pairs with [OmegaWare-GUI](../OmegaWare-GUI): the pipeline hands over device, queue, format and command
+It pairs with [OmegaWare-GUI](https://github.com/OmegaWareProjects/OmegaWare-GUI): the pipeline hands over device, queue, format and command
 list, the GUI backend draws.
 
 Scope is the same as the framework: single-player and co-op games that allow modding.
