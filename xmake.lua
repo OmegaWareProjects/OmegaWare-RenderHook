@@ -3,8 +3,17 @@ set_version("0.1.0")
 
 add_rules("mode.debug", "mode.release")
 
+local function LlvmTool(strName)
+    local strTool = path.join(os.getenv("ProgramFiles") or "", "LLVM", "bin", strName .. ".exe")
+    return os.isfile(strTool) and strTool or strName
+end
+set_toolchains("clang-cl")
+set_toolset("ld", LlvmTool("lld-link"))
+set_toolset("sh", LlvmTool("lld-link"))
+set_toolset("ar", LlvmTool("llvm-ar"))
+
 if is_mode("debug") then
-    set_symbols("debug", "edit")
+    set_symbols("debug")
 end
 
 set_languages("c++latest")
