@@ -28,6 +28,7 @@ namespace OmegaRenderHook
 
 		[[nodiscard]] bool IsInstalled() const { return m_clVTable.IsInstalled() || m_clInline.IsInstalled(); }
 		[[nodiscard]] void* Identity() const { return m_pIdentity; }
+		[[nodiscard]] bool IsVTable() const { return m_clVTable.IsInstalled(); }
 
 		template <typename T>
 		[[nodiscard]] T Original() const

@@ -18,6 +18,9 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
+#include <format>
+#include <string>
 #include <memory>
 #include <mutex>
 #include <shared_mutex>
@@ -501,6 +504,30 @@ namespace OmegaRenderHook
 				rState.aQueueVTables.push_back(pVTable);
 		}
 
+		[[nodiscard]] std::string DescribeAddress(const void* pAddress)
+		{
+			HMODULE hModule = nullptr;
+			if (!pAddress || !GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, static_cast<LPCWSTR>(pAddress), &hModule))
+				return "no module";
+			wchar_t wszPath[MAX_PATH]{};
+			GetModuleFileNameW(hModule, wszPath, MAX_PATH);
+			std::string strName;
+			for (const wchar_t* pChar = wszPath; *pChar; ++pChar)
+				strName.push_back(*pChar < 128 ? static_cast<char>(*pChar) : '?');
+			const std::size_t uSlash = strName.find_last_of("\\/");
+			if (uSlash != std::string::npos)
+				strName.erase(0, uSlash + 1);
+			return std::format("{}+{:#x}", strName, reinterpret_cast<std::uintptr_t>(pAddress) - reinterpret_cast<std::uintptr_t>(hModule));
+		}
+
+		void LogPresentFailure(HRESULT hResult, UINT uFlags)
+		{
+			static std::atomic<int> s_iLogged = 0;
+			if (SUCCEEDED(hResult) || s_iLogged.fetch_add(1, std::memory_order_relaxed) >= 8)
+				return;
+			Log(ELogLevel::Warning, "present trace: the game's Present returned {:#010x} (flags {:#x}, thread {}, overlay {})", static_cast<std::uint32_t>(hResult), uFlags, GetCurrentThreadId(), State().bActive.load(std::memory_order_acquire) ? "active" : "uninstalling or off");
+		}
+
 		template <std::size_t uKind>
 		HRESULT STDMETHODCALLTYPE HookPresent(IDXGISwapChain* pSwapChain, UINT uSyncInterval, UINT uFlags)
 		{
@@ -510,6 +537,7 @@ namespace OmegaRenderHook
 				OnPresent(pSwapChain);
 			const HRESULT hResult = pfnOriginal(pSwapChain, uSyncInterval, uFlags);
 			--t_iPresentDepth;
+			LogPresentFailure(hResult, uFlags);
 			return hResult;
 		}
 
@@ -522,6 +550,7 @@ namespace OmegaRenderHook
 				OnPresent(pSwapChain);
 			const HRESULT hResult = pfnOriginal(pSwapChain, uSyncInterval, uFlags, pParameters);
 			--t_iPresentDepth;
+			LogPresentFailure(hResult, uFlags);
 			return hResult;
 		}
 
@@ -736,6 +765,26 @@ namespace OmegaRenderHook
 		{
 			ForEachHook(rState, [](clMethodHook& rHook) { rHook.Release(); });
 		}
+
+		void LogHookOwners(stState& rState, std::string_view strWhen)
+		{
+			std::size_t uIndex = 0;
+			ForEachHook(rState, [&](clMethodHook& rHook) {
+				const std::size_t uThis = uIndex++;
+				if (!rHook.IsInstalled() || !rHook.Identity())
+					return;
+				if (rHook.IsVTable())
+				{
+					void* const* ppSlot = static_cast<void* const*>(rHook.Identity());
+					Log(ELogLevel::Info, "unload trace [{}]: hook {} vtable slot {} now points at {}", strWhen, uThis, rHook.Identity(), DescribeAddress(*ppSlot));
+				}
+				else
+				{
+					const auto* pBytes = static_cast<const std::uint8_t*>(rHook.Identity());
+					Log(ELogLevel::Info, "unload trace [{}]: hook {} inline target {} starts with {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}", strWhen, uThis, DescribeAddress(rHook.Identity()), pBytes[0], pBytes[1], pBytes[2], pBytes[3], pBytes[4], pBytes[5]);
+				}
+			});
+		}
 	}
 
 	namespace PipelineInternal
@@ -918,22 +967,34 @@ namespace OmegaRenderHook
 			HookVulkan::RequestDetach(std::chrono::milliseconds(1000));
 
 			bool bRestored = true;
+			const auto tpTraceStart = std::chrono::steady_clock::now();
+			auto fnTrace = [&](std::string_view strStep) {
+				Log(ELogLevel::Info, "unload trace: {} (+{} ms, thread {})", strStep, std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - tpTraceStart).count(), GetCurrentThreadId());
+			};
 			{
 				std::scoped_lock lckState(rState.mtxState);
 				if (!rState.bInstalled)
 					return true;
+				fnTrace("uninstall started");
+				LogHookOwners(rState, "before restore");
 				rState.bActive.store(false, std::memory_order_release);
 				DestroyRenderers(rState, EDetachReason::Uninstall);
+				fnTrace("renderers destroyed");
 				bRestored = WindowHook::Detach() && bRestored;
+				fnTrace(bRestored ? "window procedure restored" : "window procedure NOT restored");
 				bRestored = RemoveHooks(rState) && bRestored;
+				fnTrace(bRestored ? "swap chain and queue hooks removed" : "some hooks were NOT removed");
 				bRestored = HookDX9::Disable() && bRestored;
 				bRestored = HookOpenGL::Disable() && bRestored;
 				bRestored = HookVulkan::Disable() && bRestored;
 				bRestored = DepthDX11::Disable() && bRestored;
 				bRestored = DepthDX12::Disable() && bRestored;
+				fnTrace("other api and depth hooks disabled");
+				LogHookOwners(rState, "after restore");
 			}
 
 			const bool bDrained = clHookScope::WaitForDrain(std::chrono::milliseconds(2000));
+			fnTrace(bDrained ? "no hooked calls in flight" : "hooked calls were STILL in flight");
 			if (!bDrained)
 				Log(ELogLevel::Warning, "hooked calls still in flight after uninstall, the module is not safe to unload");
 			HookDX9::Release(bDrained);
@@ -942,6 +1003,7 @@ namespace OmegaRenderHook
 			DepthDX11::Release(bDrained);
 			DepthDX12::Release(bDrained);
 
+			fnTrace("hook memory released");
 			std::scoped_lock lckState(rState.mtxState);
 			if (bDrained)
 				ReleaseHooks(rState);
