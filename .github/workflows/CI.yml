@@ -20,7 +20,7 @@ jobs:
       OUTPUT_DIR: Build/${{ matrix.build_configuration == 'debug' && 'Debug' || 'Release' }}/${{ matrix.architecture }}
     steps:
     - name: Checkout Repository
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
     - name: Install XMake
       uses: xmake-io/github-action-setup-xmake@v1
       with:
@@ -32,7 +32,7 @@ jobs:
       run: |
         xmake build
     - name: Upload Artifacts
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v6
       with:
         name: OmegaRenderHook-${{ matrix.build_configuration }}-${{ matrix.architecture }}
         path: |
